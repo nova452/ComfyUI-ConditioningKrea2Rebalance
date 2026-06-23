@@ -70,7 +70,7 @@ class ConditioningKrea2Rebalance:
     def INPUT_TYPES(cls):
         return {"required": {
             "conditioning": ("CONDITIONING",),
-            "multiplier": ("FLOAT", {"default": 1.0, "min": -1000000000.0, "max": 1000000000.0, "step": 0.01}),
+            "multiplier": ("FLOAT", {"default": 4.0, "min": -1000000000.0, "max": 1000000000.0, "step": 0.01}),
             "per_layer_weights": ("STRING", {"default": cls.DEFAULT_WEIGHTS, "multiline": False}),
         }}
 
