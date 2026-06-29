@@ -756,8 +756,7 @@
                 "name": "conditioning",
                 "type": "CONDITIONING",
                 "links": [
-                  52,
-                  20855
+                  52
                 ]
               }
             ],
@@ -814,52 +813,6 @@
               "Node name for S&R": "BasicGuider"
             },
             "widgets_values": []
-          },
-          {
-            "id": 41023,
-            "type": "RebalanceCFG",
-            "pos": [
-              -390,
-              560
-            ],
-            "size": [
-              400,
-              210
-            ],
-            "flags": {},
-            "order": 12,
-            "mode": 0,
-            "inputs": [
-              {
-                "localized_name": "conditioning_1",
-                "name": "conditioning_1",
-                "type": "CONDITIONING",
-                "link": 20855
-              },
-              {
-                "localized_name": "conditioning_2",
-                "name": "conditioning_2",
-                "type": "CONDITIONING",
-                "link": null
-              }
-            ],
-            "outputs": [
-              {
-                "localized_name": "conditioning",
-                "name": "conditioning",
-                "type": "CONDITIONING",
-                "links": null
-              }
-            ],
-            "properties": {
-              "Node name for S&R": "RebalanceCFG"
-            },
-            "widgets_values": [
-              "0.000-0.125:1.50; 0.125-0.250:1.40; 0.250-0.375:1.20; 0.375-0.500:1.00; 0.500-0.625:0.80; 0.625-0.750:0.60; 0.750-0.875:0.40; 0.875-1.000:0.20",
-              "0.000-0.125:0.20; 0.125-0.250:0.40; 0.250-0.375:0.60; 0.375-0.500:0.80; 0.500-0.625:1.00; 0.625-0.750:1.20; 0.750-0.875:1.40; 0.875-1.000:1.50",
-              "gradual",
-              8
-            ]
           },
           {
             "id": 16,
@@ -1045,41 +998,6 @@
             "widgets_values": []
           },
           {
-            "id": 21,
-            "type": "Reroute",
-            "pos": [
-              -550,
-              160
-            ],
-            "size": [
-              80,
-              30
-            ],
-            "flags": {},
-            "order": 10,
-            "mode": 0,
-            "inputs": [
-              {
-                "name": "",
-                "type": "*",
-                "link": 31
-              }
-            ],
-            "outputs": [
-              {
-                "name": "",
-                "type": "*",
-                "links": [
-                  53
-                ]
-              }
-            ],
-            "properties": {
-              "showOutputText": false,
-              "horizontal": false
-            }
-          },
-          {
             "id": 13,
             "type": "EmptyLatentImage",
             "pos": [
@@ -1134,6 +1052,41 @@
               1024,
               1
             ]
+          },
+          {
+            "id": 21,
+            "type": "Reroute",
+            "pos": [
+              -550,
+              160
+            ],
+            "size": [
+              80,
+              30
+            ],
+            "flags": {},
+            "order": 10,
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "",
+                "type": "*",
+                "link": 31
+              }
+            ],
+            "outputs": [
+              {
+                "name": "",
+                "type": "*",
+                "links": [
+                  53
+                ]
+              }
+            ],
+            "properties": {
+              "showOutputText": false,
+              "horizontal": false
+            }
           }
         ],
         "groups": [],
@@ -1299,14 +1252,6 @@
             "type": "STRING"
           },
           {
-            "id": 20855,
-            "origin_id": 32,
-            "origin_slot": 0,
-            "target_id": 41023,
-            "target_slot": 0,
-            "type": "CONDITIONING"
-          },
-          {
             "id": 20859,
             "origin_id": 13,
             "origin_slot": 0,
@@ -1323,10 +1268,10 @@
   "extra": {
     "frontendVersion": "1.45.19",
     "ds": {
-      "scale": 0.725552657480315,
+      "scale": 0.8343855561023615,
       "offset": [
-        1548.2002136183858,
-        421.945995531508
+        1254.195287457147,
+        238.82730983704943
       ]
     }
   },

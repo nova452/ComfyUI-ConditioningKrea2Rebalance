@@ -112,7 +112,7 @@ def compile_edit(clip, prompt, images_with_size=None):
             samples = image.movedim(-1, 1)  # NHWC -> NCHW
             scaled = _scale_to_resolution(samples, target)
             images_vl.append(scaled.movedim(1, -1))  # back to NHWC for clip.tokenize
-            image_prompt += "Picture {}: <|vision_start|><|image_pad|><|vision_end|>".format(i + 1)
+            image_prompt += "Picture {}: <|vision_start|><|image_pad|><|vision_end|>".format(len(images_vl))
 
     full_prompt = image_prompt + prompt if image_prompt else prompt
 
