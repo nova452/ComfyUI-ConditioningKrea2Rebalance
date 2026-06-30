@@ -10,6 +10,56 @@ except ImportError:
     _COMFY_AVAILABLE = False
 
 
+# Encoder profile registry + automatic routing
+_ENCODER_PROFILES = {}
+
+
+class EncoderProfile:
+
+    def __init__(self, name, n_taps, hidden_dim, tap_layers=None):
+        self.name = name
+        self.n_taps = int(n_taps)
+        self.hidden_dim = int(hidden_dim)
+        self.feature_dim = self.n_taps * self.hidden_dim
+        self.tap_layers = list(tap_layers) if tap_layers is not None else None
+
+    def __repr__(self):
+        return "EncoderProfile(name={!r}, n_taps={}, hidden_dim={}, feature_dim={})".format(
+            self.name, self.n_taps, self.hidden_dim, self.feature_dim)
+
+
+def register_encoder_profile(name, n_taps, hidden_dim, tap_layers=None):
+
+    profile = EncoderProfile(name, n_taps, hidden_dim, tap_layers)
+    _ENCODER_PROFILES[name] = profile
+    # Index by feature_dim for fast lookup
+    _ENCODER_PROFILES.setdefault(("_dim", profile.feature_dim), []).append(profile)
+    return profile
+
+
+def get_encoder_profile(name):
+    return _ENCODER_PROFILES.get(name)
+
+
+def detect_encoder_profile(feature_dim):
+
+    matches = _ENCODER_PROFILES.get(("_dim", int(feature_dim)), [])
+    if matches:
+        return matches[0]
+    return None
+
+
+def _resolve_n_bands(t, default=12):
+
+    flat = t.shape[-1]
+    profile = detect_encoder_profile(flat)
+    if profile is not None and flat % profile.n_taps == 0:
+        return profile.n_taps
+    if default > 1 and flat % default == 0:
+        return default
+    return 1
+
+
 def _unit_norm_dim(t, eps=1e-8):
     dtype = t.dtype
     t = t.float()
@@ -17,8 +67,10 @@ def _unit_norm_dim(t, eps=1e-8):
     return (t / norm).to(dtype)
 
 
-def _split_bands(t, n_bands=12):
+def _split_bands(t, n_bands=None):
     flat = t.shape[-1]
+    if n_bands is None:
+        n_bands = _resolve_n_bands(t)
     if n_bands > 1 and flat % n_bands == 0:
         d = flat // n_bands
         return t.view(*t.shape[:-1], n_bands, d), d
@@ -96,10 +148,18 @@ def _scale_to_resolution(samples, target):
     return comfy.utils.common_upscale(samples, nw, nh, "area", "disabled")
 
 
-def compile_edit(clip, prompt, images_with_size=None):
-    """Encode an edit prompt with optional reference images."""
+def compile_edit(clip, prompt, images_with_size=None, llama_template=None):
+    """Encode an edit prompt with optional reference images.
+
+    ``llama_template`` selects the encoder's chat template. When ``None``, the
+    legacy ``SYS_TEMPLATE`` is used (Krea 2 default). Encoder-specific modules
+    pass their own template so the same helper serves both Krea 2 and Ideogram 4.
+    """
     if not _COMFY_AVAILABLE:
-        raise RuntimeError("Krea 2 Edit requires ComfyUI (comfy.utils, node_helpers).")
+        raise RuntimeError("Edit encode requires ComfyUI (comfy.utils, node_helpers).")
+
+    if llama_template is None:
+        llama_template = SYS_TEMPLATE
 
     images_vl = []
     image_prompt = ""
@@ -119,7 +179,7 @@ def compile_edit(clip, prompt, images_with_size=None):
     tokens = clip.tokenize(
         full_prompt,
         images=images_vl if images_vl else None,
-        llama_template=SYS_TEMPLATE,
+        llama_template=llama_template,
     )
     conditioning = clip.encode_from_tokens_scheduled(tokens)
 
@@ -206,7 +266,9 @@ def _project_dissim_whole(cond_t, ref_t, strength, sign):
     return out.to(cond_t.dtype)
 
 
-def _apply_dissim(cond_t, ref_t, strength, per_band_strengths, n_bands=12):
+def _apply_dissim(cond_t, ref_t, strength, per_band_strengths, n_bands=None):
+    if n_bands is None:
+        n_bands = _resolve_n_bands(cond_t)
     cond_bands, d = _split_bands(cond_t, n_bands)
     ref_bands, d2 = _split_bands(ref_t, n_bands)
     if cond_bands is not None and ref_bands is not None and d == d2:
@@ -214,7 +276,7 @@ def _apply_dissim(cond_t, ref_t, strength, per_band_strengths, n_bands=12):
     return _project_dissim_whole(cond_t, ref_t, strength, sign=+1)
 
 
-def guidance_conditioning(structure, ref_structure, strength, per_band_strengths=None):
+def guidance_conditioning(structure, ref_structure, strength, per_band_strengths=None, n_bands=None):
     if isinstance(structure, list):
         out = []
         ref_iter = iter(ref_structure) if isinstance(ref_structure, list) else None
@@ -224,194 +286,22 @@ def guidance_conditioning(structure, ref_structure, strength, per_band_strengths
                     and isinstance(item[0], torch.Tensor) and isinstance(item[1], dict):
                 cond_t, extras = item
                 ref_t = _extract_cond_tensor(ref_item) if ref_item is not None else None
-                new_cond = _apply_dissim(cond_t, ref_t, strength, per_band_strengths) \
+                new_cond = _apply_dissim(cond_t, ref_t, strength, per_band_strengths, n_bands=n_bands) \
                     if ref_t is not None else cond_t
                 out.append([new_cond, dict(extras)])
             else:
-                out.append(guidance_conditioning(item, ref_item, strength, per_band_strengths))
+                out.append(guidance_conditioning(item, ref_item, strength, per_band_strengths, n_bands=n_bands))
         return out
     if isinstance(structure, torch.Tensor):
         ref_t = _extract_cond_tensor(ref_structure) if ref_structure is not None else None
         if ref_t is not None:
-            return _apply_dissim(structure, ref_t, strength, per_band_strengths)
+            return _apply_dissim(structure, ref_t, strength, per_band_strengths, n_bands=n_bands)
         return structure
     return structure
 
 
-def guidance(conditioning, reference, strength):
-    return guidance_conditioning(conditioning, reference, strength, per_band_strengths=None)
-
-
-class ConditioningKrea2Rebalance:
-
-    DEFAULT_WEIGHTS = "1.0,1.0,1.0,1.0,1.0,1.0,1.0,2.5,5.0,1.1,4.0,1.0"
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {"required": {
-            "conditioning": ("CONDITIONING",),
-            "multiplier": ("FLOAT", {"default": 4.0, "min": -1000000000.0, "max": 1000000000.0, "step": 0.01}),
-            "per_layer_weights": ("STRING", {"default": cls.DEFAULT_WEIGHTS, "multiline": False}),
-        }}
-
-    RETURN_TYPES = ("CONDITIONING",)
-    RETURN_NAMES = ("conditioning",)
-    FUNCTION = "main"
-    CATEGORY = "conditioning"
-
-    def main(self, conditioning, multiplier, per_layer_weights=None):
-        plw = _parse_floats(per_layer_weights) if per_layer_weights else None
-        c = scale_conditioning(conditioning, multiplier, weights=plw)
-        return (c,)
-
-
-class Krea2EditRebalance:
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {"required": {
-            "text": ("STRING", {"multiline": True, "dynamicPrompts": True}),
-            "clip": ("CLIP",),
-        },
-        "optional": {
-            "negative": ("STRING", {"forceInput": True}),
-            "image1": ("IMAGE",),
-            "image1_tokens": (["low", "normal", "high", "max"], {"default": "normal"}),
-            "image2": ("IMAGE",),
-            "image2_tokens": (["low", "normal", "high", "max"], {"default": "normal"}),
-            "image3": ("IMAGE",),
-            "image3_tokens": (["low", "normal", "high", "max"], {"default": "normal"}),
-            "image4": ("IMAGE",),
-            "image4_tokens": (["low", "normal", "high", "max"], {"default": "normal"}),
-        }}
-
-    RETURN_TYPES = ("CONDITIONING",)
-    RETURN_NAMES = ("conditioning",)
-    FUNCTION = "main"
-    CATEGORY = "conditioning"
-
-    @staticmethod
-    def _process_cond(cond_main, cond_ref, refocus_strength=1.00, guidance_strength=1.000):
-        cond_ref = refocus(
-            cond_ref, refocus_strength, "1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0",
-        )
-        cond_main = refocus(
-            cond_main, refocus_strength, "0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,12.0,0.0,0.0,0.0",
-        )
-        return guidance(cond_main, cond_ref, guidance_strength)
-
-    def main(self, text, clip, refocus_strength=1.00, guidance_strength=1.000,
-             negative=None,
-             image1=None, image1_tokens="normal",
-             image2=None, image2_tokens="normal",
-             image3=None, image3_tokens="normal",
-             image4=None, image4_tokens="normal"):
-        if not _COMFY_AVAILABLE:
-            raise RuntimeError("Krea 2 Edit requires ComfyUI (comfy.utils, node_helpers).")
-
-        safe = _align_prompt(text)
-        prompt_main = "" + safe
-        ref_prefix = negative if negative is not None and str(negative) != "" else ""
-        prompt_ref = str(ref_prefix) + ""
-
-        images_with_size = [
-            (image1, image1_tokens),
-            (image2, image2_tokens),
-            (image3, image3_tokens),
-            (image4, image4_tokens),
-        ]
-        has_image = any(img is not None for img, _ in images_with_size)
-
-        cond_raw = compile_edit(clip, prompt_main, None)
-
-        if has_image:
-            cond_image_main = compile_edit(clip, prompt_main, images_with_size)
-            cond_image_ref = compile_edit(clip, prompt_ref, images_with_size)
-
-            # compile the main cond with the subject layer before the 1st process (apply selective emphasis)
-            cond_image_main = refocus(
-                cond_image_main, 1.0,
-                "0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,12.0,0.0,0.0,0.0",
-            )
-
-            # unfocus the subject on ref
-            cond_image_ref = refocus(
-                cond_image_ref, 1.0,
-                "1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0",
-            )
-
-            # 1st process: subject vs outlier guidance
-            first = guidance(cond_image_main, cond_image_ref, guidance_strength)
-
-            # post process: re-refocus the subject layer, multiplier 1
-            compiled = refocus(
-                first, 1.0,
-                "0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,12.0,0.0,0.0,0.0",
-            )
-
-            # 2: guider (unconditional vs compiled)
-            second = guidance(cond_raw, compiled, -0.5)
-
-            # 3: guider (first pipe vs second)
-            third = guidance(first, second, -0.5)
-
-            # step 4: custom Rebalance CFG with fixed schedules
-            final = RebalanceCFG().main(
-                cond_raw, third,
-                "0.000-0.200:1.00;",
-                "0.200-0.750:0.80; 0.750-0.875:1.40; 0.875-1.000:20.50",
-                "gradual", 8,
-            )[0]
-        else:
-            final = cond_raw
-
-        return (final,)
-
-
-class Krea2EncodeRebalance:
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {"required": {
-            "text": ("STRING", {"multiline": True, "dynamicPrompts": True}),
-            "clip": ("CLIP",),
-        },
-        "optional": {
-            "image1": ("IMAGE",),
-            "image1_tokens": (["low", "normal", "high", "max"], {"default": "normal"}),
-            "image2": ("IMAGE",),
-            "image2_tokens": (["low", "normal", "high", "max"], {"default": "normal"}),
-            "image3": ("IMAGE",),
-            "image3_tokens": (["low", "normal", "high", "max"], {"default": "normal"}),
-            "image4": ("IMAGE",),
-            "image4_tokens": (["low", "normal", "high", "max"], {"default": "normal"}),
-        }}
-
-    RETURN_TYPES = ("CONDITIONING",)
-    RETURN_NAMES = ("conditioning",)
-    FUNCTION = "main"
-    CATEGORY = "conditioning"
-
-    def main(self, text, clip,
-             image1=None, image1_tokens="normal",
-             image2=None, image2_tokens="normal",
-             image3=None, image3_tokens="normal",
-             image4=None, image4_tokens="normal"):
-        if not _COMFY_AVAILABLE:
-            raise RuntimeError("Krea 2 Edit requires ComfyUI (comfy.utils, node_helpers).")
-
-        prompt = "" + _align_prompt(text)
-
-        images_with_size = [
-            (image1, image1_tokens),
-            (image2, image2_tokens),
-            (image3, image3_tokens),
-            (image4, image4_tokens),
-        ]
-        has_image = any(img is not None for img, _ in images_with_size)
-
-        final = compile_edit(clip, prompt, images_with_size if has_image else None)
-
-        return (final,)
+def guidance(conditioning, reference, strength, n_bands=None):
+    return guidance_conditioning(conditioning, reference, strength, per_band_strengths=None, n_bands=n_bands)
 
 
 class RebalanceGuider:
@@ -595,21 +485,35 @@ class RebalanceCFG:
 
 
 NODE_CLASS_MAPPINGS = {
-    "Krea2EditRebalance": Krea2EditRebalance,
-    "Krea2EncodeRebalance": Krea2EncodeRebalance,
     "RebalanceGuider": RebalanceGuider,
     "StepRebalance": StepRebalance,
     "RebalanceCFG": RebalanceCFG,
-    "ConditioningKrea2Rebalance": ConditioningKrea2Rebalance,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "Krea2EditRebalance": "Krea 2 Image Edit Rebalance",
-    "Krea2EncodeRebalance": "Krea 2 Encode Rebalance",
     "RebalanceGuider": "Rebalance Guider",
     "StepRebalance": "Step Rebalance",
     "RebalanceCFG": "Rebalance CFG Custom",
-    "ConditioningKrea2Rebalance": "Conditioning Krea2 Rebalance",
 }
 
-__all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
+__all__ = [
+    "NODE_CLASS_MAPPINGS",
+    "NODE_DISPLAY_NAME_MAPPINGS",
+
+
+    # Core helpers re-exported
+    "EncoderProfile",
+    "register_encoder_profile",
+    "get_encoder_profile",
+    "detect_encoder_profile",
+    "compile_edit",
+    "scale_conditioning",
+    "refocus",
+    "guidance",
+    "guidance_conditioning",
+    "RebalanceCFG",
+    "RebalanceGuider",
+    "StepRebalance",
+    "SYS_TEMPLATE",
+    "RESOLUTIONS",
+]
